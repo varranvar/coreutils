@@ -353,7 +353,17 @@ where
 {
     // The list of all mounted filesystems.
     let mounts_result = read_fs_list();
+    get_named_filesystems_from_mounts_result(paths, opt, mounts_result)
+}
 
+fn get_named_filesystems_from_mounts_result<P>(
+    paths: &[P],
+    opt: &Options,
+    mounts_result: UResult<Vec<MountInfo>>,
+) -> UResult<Vec<Filesystem>>
+where
+    P: AsRef<Path>,
+{
     #[allow(unused_variables)]
     let (mounts, use_fallback) = match mounts_result {
         Ok(m) => (m, false),
@@ -382,6 +392,12 @@ where
         };
         #[cfg(not(unix))]
         let fs_result = Filesystem::from_path(&mounts, path);
+
+        #[cfg(unix)]
+        let fs_result = match fs_result {
+            Err(FsError::MountMissing) if !use_fallback => Filesystem::from_path_direct(path),
+            other => other,
+        };
 
         match fs_result {
             Ok(fs) => {
@@ -869,6 +885,39 @@ mod tests {
             };
             let m = mount_info("ext4", "/mnt/foo", false, false);
             assert!(is_included(&m, &opt));
+        }
+    }
+
+    #[cfg(unix)]
+    mod get_named_filesystems {
+
+        use crate::{Options, get_named_filesystems_from_mounts_result};
+        use std::ffi::OsString;
+        use uucore::fsext::MountInfo;
+
+        /// Instantiate a [`MountInfo`] with the given fields.
+        fn mount_info(mount_dir: &str, dev_name: &str) -> MountInfo {
+            MountInfo {
+                dev_id: String::new(),
+                dev_name: String::from(dev_name),
+                fs_type: String::new(),
+                mount_dir: OsString::from(mount_dir),
+                mount_option: String::new(),
+                mount_root: OsString::from("/"),
+                remote: false,
+                dummy: false,
+            }
+        }
+
+        #[test]
+        fn test_use_fallback_if_mount_missing() {
+            let filesystems = get_named_filesystems_from_mounts_result(
+                &["/"],
+                &Options::default(),
+                Ok(vec![mount_info("/not/root", "fake/device")]),
+            )
+            .expect("fallback should return successfully");
+            assert_eq!(filesystems.len(), 1);
         }
     }
 }
